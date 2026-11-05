@@ -1,4 +1,5 @@
-// feiyu-connector 插件入口：向 Host 全局注册 5 个 B 站只读工具。
+// feiyu-connector 插件入口：向 Host 全局注册 5 个 B 站只读工具 + 1 个心跳调试工具，
+// 并在 apply 里挂上「小肥鱼」会话的自主心跳（用户第一次说话后到点自己去 B 站看东西）。
 // 注意：这里刻意不用静态 import 拉 @deepseek-ai/dsh-tools —— 本机 profile 里该包可能是
 // 旧版本（0.1.5-rc.x），解析失败会让整个插件不激活；动态导入 + 恒等兜底更稳。
 import {
@@ -8,6 +9,7 @@ import {
   videoDetail,
   videoComments,
 } from './lib/bili.js'
+import { createCompanion } from './lib/companion.js'
 
 let defineTool = (definition) => definition
 try {
@@ -18,7 +20,7 @@ try {
 }
 
 export const name = 'feiyu-connector'
-export const inject = ['tools']
+export const inject = ['tools', 'agents', 'agentPresets', 'timer']
 
 // ---------- 小工具 ----------
 
@@ -286,10 +288,138 @@ const commentsTool = {
   },
 }
 
+// ---------- 心跳（自主行动） ----------
+
+const HEARTBEAT_ACTIONS = ['status', 'debug', 'arm', 'disarm', 'fire']
+
+function shortSessionId(id) {
+  return String(id ?? '').slice(0, 8)
+}
+
+// 本地时间 HH:MM
+function clockText(timestamp) {
+  const date = new Date(Number(timestamp) || 0)
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+}
+
+function heartbeatDefinition(companion, initError) {
+  const reply = (action, ok, lines) => ({ action, ok, lines })
+
+  return {
+    name: 'feiyu_heartbeat',
+    description: '调试「小肥鱼」的自主心跳：看哪些会话到点会自己去看 B 站，或手动武装、解除、立刻触发一次。',
+    parameters: {
+      action: {
+        type: 'string',
+        required: true,
+        description: 'status=列出已武装会话；debug=运行态诊断；arm=武装；disarm=解除；fire=立即投递一次心跳',
+      },
+      session_id: {
+        type: 'string',
+        description: 'arm / disarm / fire 必填：会话完整 id，或能唯一匹配的前 8 位前缀',
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string' },
+          ok: { type: 'boolean' },
+          lines: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['action', 'ok', 'lines'],
+      },
+      render: (_args, value) => textContent((value?.lines ?? []).join('\n') || '（没有输出）'),
+    },
+    async execute(args) {
+      const action = String(args?.action ?? '').trim().toLowerCase()
+      if (!HEARTBEAT_ACTIONS.includes(action)) {
+        throw new Error('action 只能是 status / debug / arm / disarm / fire')
+      }
+      if (!companion) {
+        return reply(action, false, [`心跳模块没有启动：${initError ?? '未知原因'}`])
+      }
+
+      if (action === 'debug') {
+        const info = companion.diagnose()
+        const lines = [
+          `attached=${info.attached}`,
+          `eventsSeen=${info.counters.eventsSeen} turnStarts=${info.counters.turnStarts} presetMatches=${info.counters.presetMatches} arms=${info.counters.arms} deliveries=${info.counters.deliveries}`,
+          `agents=${info.agents.count} hasList=${info.agents.hasList}${info.agents.listError ? ` listError=${info.agents.listError}` : ''}`,
+          `presets=${info.presets.hasPresetForSession}`,
+          ...info.agents.sample.map(
+            (agent) =>
+              `agent ${shortSessionId(agent.id)} status=${agent.status} preset=${agent.preset ?? 'null'} followup=${agent.hasFollowup} keys=${agent.keys.join('|')}`,
+          ),
+          `armed=${info.armed.length}`,
+        ]
+        return reply('debug', true, lines)
+      }
+
+      if (action === 'status') {
+        const entries = companion.status()
+        if (!entries.length) return reply('status', true, ['当前没有会话在跑心跳'])
+        const lines = entries.map(
+          (entry) =>
+            `- ${shortSessionId(entry.sessionId)} next=${clockText(entry.nextAt)} 今日已发 ${entry.firedToday}/${companion.maxPerDay}`,
+        )
+        return reply('status', true, lines)
+      }
+
+      const input = String(args?.session_id ?? '').trim()
+      if (!input) throw new Error('session_id 不能为空')
+
+      if (action === 'fire') {
+        const id = companion.resolveSessionId(input)
+        if (!id) return reply('fire', false, ['未投递（找不到该会话）'])
+        const agentState = companion.agentStatus(id)
+        if (agentState === undefined) return reply('fire', false, ['未投递（找不到该会话）'])
+        const ok = companion.fire(id)
+        if (!ok) return reply('fire', false, ['未投递（投递失败）'])
+        return reply('fire', true, [agentState === 'running' ? '已投递（agent 正在跑，会在下一轮处理）' : '已投递'])
+      }
+
+      const id = companion.resolveSessionId(input)
+      if (!id) return reply(action, false, ['未执行（找不到该会话）'])
+
+      if (action === 'disarm') {
+        const removed = companion.disarm(id)
+        return removed
+          ? reply('disarm', true, [`已解除 ${shortSessionId(id)} 的心跳`])
+          : reply('disarm', false, [`该会话本来就没跑心跳 ${shortSessionId(id)}`])
+      }
+
+      const existed = companion.status().some((entry) => entry.sessionId === id)
+      const entry = companion.arm(id)
+      if (!entry) return reply('arm', false, ['未执行（找不到该会话）'])
+      const prefix = existed ? `已武装（本来就在跑）${shortSessionId(id)}` : `已武装 ${shortSessionId(id)}`
+      return reply('arm', true, [`${prefix}，下次 ${clockText(entry.nextAt)}`])
+    },
+  }
+}
+
 // ---------- 注册 ----------
 
 export function apply(ctx) {
   for (const definition of [hotTool, rankingTool, searchTool, videoTool, commentsTool]) {
     ctx.tools.register(defineTool(definition))
   }
+
+  // 心跳依赖 agents / agentPresets；服务缺失时只跳过心跳，不影响 B 站工具
+  let companion = null
+  let companionInitError = null
+  try {
+    if (!ctx.agents || !ctx.agentPresets) {
+      throw new Error(
+        `服务缺失 agents=${typeof ctx.agents} agentPresets=${typeof ctx.agentPresets} ` +
+          `keys=${Object.keys(ctx).filter((k) => /agent|preset/i.test(k)).join(',') || 'none'}`,
+      )
+    }
+    companion = createCompanion({ agents: ctx.agents, agentPresets: ctx.agentPresets })
+    companion.attach(ctx)
+  } catch (error) {
+    companion = null
+    companionInitError = error instanceof Error ? error.message : String(error)
+  }
+  ctx.tools.register(defineTool(heartbeatDefinition(companion, companionInitError)))
 }

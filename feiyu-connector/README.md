@@ -20,7 +20,9 @@ plugin_manager(action: "install_bundle", target: "D:/pr_g/ohjingjing/feiyu-conne
 装好后：
 
 - 设置页 → Agent preset 里可以选「小肥鱼」（也可设为新任务默认）；
-- 任意会话都能看到 5 个 `bili_*` 工具（工具是 Host 全局注册的，不限于该 preset）。
+- 任意会话都能看到 5 个 `bili_*` 工具（工具是 Host 全局注册的，不限于该 preset）；
+- **首次对话后自动开始心跳**：该「小肥鱼」会话第一次进入 agent 轮次时，插件自动武装一个计时器（20 分钟首跳，之后约每 90 分钟一次，23:00–08:00 静默，每日最多 6 次）。到点它会真的去 `bili_hot`/`bili_ranking`/`bili_search` 找内容，再用角色口吻主动说 1~2 句，而不是打招呼。
+- 运维工具 `feiyu_heartbeat`：`status` 看已武装会话与下次时间，`fire` 立即投递一次（便于验证），`arm`/`disarm` 手动管理。
 
 ## 工具
 

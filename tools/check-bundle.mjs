@@ -12,7 +12,7 @@
  * 约束：只读，不修改 feiyu-connector/，不写任何文件；YAML 用内置迷你解析器（不装依赖）。
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 
@@ -64,6 +64,25 @@ function sliceBraced(src, fromIndex) {
   }
   return null
 }
+
+/** 递归列出 bundle 内的文件（相对路径，/ 分隔）。 */
+function listFiles(rel = '') {
+  const out = []
+  let entries
+  try {
+    entries = readdirSync(join(DIR, rel), { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const entry of entries) {
+    const childRel = rel ? `${rel}/${entry.name}` : entry.name
+    if (entry.isDirectory()) out.push(...listFiles(childRel))
+    else out.push(childRel)
+  }
+  return out
+}
+
+const lineOf = (src, index) => src.slice(0, index).split('\n').length
 
 /* ------------------------------------------------------------------ *
  * 迷你 YAML 解析器：只覆盖 spec §4 用到的子集
@@ -479,7 +498,7 @@ if (!Array.isArray(patch)) {
  * ------------------------------------------------------------------ */
 const indexSrc = read('index.js')
 if (indexSrc === null) {
-  for (const id of ['index-name', 'index-inject', 'index-apply', 'index-definetool', 'index-import-style', 'index-tools5', 'index-tool-desc', 'index-tool-required', 'index-tool-output', 'index-schema-required', 'index-no-console', 'index-no-require', 'index-exec-signal', 'index-no-npm']) skip(id, '缺少 index.js')
+  for (const id of ['index-name', 'index-inject', 'index-apply', 'index-definetool', 'index-import-style', 'index-tools5', 'index-tool-desc', 'index-tool-required', 'index-tool-output', 'index-schema-required', 'index-no-console', 'index-no-require', 'index-exec-signal', 'index-no-npm', 'index-heartbeat-tool', 'index-heartbeat-actions', 'index-inject-companion']) skip(id, '缺少 index.js')
 } else {
   check('index-name', () => {
     assert(/export\s+const\s+name\s*=\s*['"]feiyu-connector['"]/.test(indexSrc), "未找到 export const name = 'feiyu-connector'")
@@ -584,6 +603,35 @@ if (indexSrc === null) {
     assert(bare.length === 0, `出现非法裸模块依赖：${bare.join(', ')}`)
     return `仅 import ${specs.length} 个模块（node: 与 @deepseek-ai/*）`
   })
+
+  // ---------- 心跳功能（docs/spec-feiyu-companion.md §A4 / §A6.1）----------
+  check('index-heartbeat-tool', () => {
+    const at = indexSrc.search(/name:\s*['"]feiyu_heartbeat['"]/)
+    assert(at >= 0, 'index.js 未注册 feiyu_heartbeat 工具')
+    const block = indexSrc.slice(at, at + 5000)
+    assert(/action/.test(block), 'feiyu_heartbeat 缺 action 参数')
+    assert(/session_id/.test(block), 'feiyu_heartbeat 缺 session_id 参数')
+    const actions = ['status', 'debug', 'arm', 'disarm', 'fire'].filter((a) => block.includes(a))
+    assert(actions.length === 5, `feiyu_heartbeat 的动作不完整（见 ${actions.join('/') || '无'}，期望 status/debug/arm/disarm/fire）`)
+    return `feiyu_heartbeat(action, session_id) 已注册；动作：${actions.join('/')}`
+  })
+  check('index-heartbeat-actions', () => {
+    const m = /HEARTBEAT_ACTIONS\s*=\s*\[([^\]]*)\]/.exec(indexSrc)
+    assert(m, '未找到 HEARTBEAT_ACTIONS 常量')
+    const actual = [...m[1].matchAll(/['"]([^'"]+)['"]/g)].map((x) => x[1])
+    const want = ['status', 'debug', 'arm', 'disarm', 'fire']
+    const missing = want.filter((a) => !actual.includes(a))
+    assert(missing.length === 0, `HEARTBEAT_ACTIONS 缺：${missing.join(', ')}（实际 [${actual.join(', ')}]）`)
+    return `HEARTBEAT_ACTIONS = [${actual.join(', ')}]`
+  })
+  check('index-inject-companion', () => {
+    const m = /export\s+const\s+inject\s*=\s*\[([^\]]*)\]/.exec(indexSrc)
+    assert(m, '未找到 export const inject = [...]')
+    const deps = ['tools', 'agents', 'agentPresets', 'timer']
+    const miss = deps.filter((d) => !new RegExp(`['"]${d}['"]`).test(m[1]))
+    assert(miss.length === 0, `inject 缺：${miss.join(', ')}（实际 [${clip(m[1], 80)}]；缺 timer 会在运行态报 cannot get property "timer" without inject）`)
+    return `inject 含 ${deps.join(' / ')}`
+  })
 }
 
 /* ------------------------------------------------------------------ *
@@ -643,6 +691,77 @@ if (libSrc === null) {
     return `仅 import ${specs.length} 个 node: 内置模块`
   })
 }
+
+/* ------------------------------------------------------------------ *
+ * 心跳模块（docs/spec-feiyu-companion.md §A3 / §A6.1）
+ * ------------------------------------------------------------------ */
+const companionSrc = read('lib/companion.js')
+if (companionSrc === null) {
+  for (const id of ['companion-file', 'companion-exports', 'companion-api', 'companion-uses-ctx-timers', 'companion-no-npm', 'heartbeat-debug']) skip(id, '缺少 lib/companion.js')
+} else {
+  pass('companion-file', `lib/companion.js ${companionSrc.length} 字符`)
+  check('companion-exports', () => {
+    const hit = /export\s+(async\s+)?function\s+createCompanion\s*\(|export\s+const\s+createCompanion\s*=/.test(companionSrc)
+    assert(hit, 'lib/companion.js 未导出 createCompanion')
+    return '导出 createCompanion'
+  })
+  check('companion-api', () => {
+    const names = ['attach', 'status', 'arm', 'disarm', 'fire', 'tick']
+    const miss = names.filter((n) => !new RegExp(`\\b${n}\\b`).test(companionSrc))
+    assert(miss.length === 0, `返回对象的 API 缺失：${miss.join(', ')}`)
+    return 'attach/status/arm/disarm/fire/tick 均出现'
+  })
+  check('companion-uses-ctx-timers', () => {
+    assert(/ctx\.interval/.test(companionSrc), '未用 ctx.interval 注册 60s tick')
+    assert(!/\bsetInterval\s*\(/.test(companionSrc), '直接使用裸 setInterval（应走 ctx.interval，随插件 dispose 清理）')
+    return '使用 ctx.interval，无裸 setInterval'
+  })
+  check('companion-no-npm', () => {
+    const specs = [...companionSrc.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map((m) => m[1])
+    const bad = specs.filter((s) => !s.startsWith('node:') && !s.startsWith('.'))
+    assert(bad.length === 0, `companion.js 出现非法依赖：${bad.join(', ')}（只允许 node: 内置模块与相对导入）`)
+    return specs.length ? `仅 import ${specs.length} 个 node:/相对模块` : '无任何 import（纯逻辑）'
+  })
+  // 运行态诊断工具：feiyu_heartbeat action=debug → companion.diagnose()
+  check('heartbeat-debug', () => {
+    const src = indexSrc ?? ''
+    assert(/action\s*===\s*['"]debug['"]/.test(src), 'index.js 未实现 action=debug 分支')
+    assert(/diagnose\s*\(/.test(src), 'index.js 的 debug 分支未调用 companion.diagnose()')
+    assert(/function diagnose\s*\(/.test(companionSrc), 'companion.js 未实现 diagnose()')
+    const fields = ['attached', 'eventsSeen', 'turnStarts', 'presetMatches', 'arms', 'deliveries', 'agents', 'presets', 'armed']
+    const missing = fields.filter((name) => !companionSrc.includes(name))
+    assert(missing.length === 0, `diagnose() 缺字段：${missing.join(', ')}`)
+    return 'action=debug → diagnose()（attached/counters/agents/presets/armed）'
+  })
+}
+
+// §A2：「【自主行动·心跳】」提示词常量（可在 index.js 或 lib/companion.js）
+{
+  const sources = []
+  if (indexSrc !== null) sources.push({ rel: 'index.js', src: indexSrc })
+  if (companionSrc !== null) sources.push({ rel: 'lib/companion.js', src: companionSrc })
+  if (sources.length === 0) skip('heartbeat-prompt', '缺少 index.js 与 lib/companion.js')
+  else {
+    check('heartbeat-prompt', () => {
+      const hit = sources.find((s) => /HEARTBEAT_PROMPT/.test(s.src) && s.src.includes('【自主行动·心跳】'))
+      assert(hit, '未找到 HEARTBEAT_PROMPT 常量，或文案缺「【自主行动·心跳】」')
+      return `${hit.rel} 含 HEARTBEAT_PROMPT 且含「【自主行动·心跳】」`
+    })
+  }
+}
+
+// §A6.1：全目录无 console.*（含 companion.js）
+check('dir-no-console', () => {
+  const jsFiles = listFiles().filter((rel) => /\.(m?js|cjs)$/i.test(rel))
+  const bad = []
+  for (const rel of jsFiles) {
+    const src = read(rel) ?? ''
+    const m = /console\.(log|info|warn|error|debug|trace)\b/.exec(src)
+    if (m) bad.push(`${rel}:${lineOf(src, m.index)}`)
+  }
+  assert(bad.length === 0, `存在 console 输出：${bad.join(', ')}`)
+  return `${jsFiles.length} 个 JS 文件均无 console.*`
+})
 
 /* ------------------------------------------------------------------ *
  * §7.2 允许真实 import('@deepseek-ai/dsh-tools')，失败则 SKIP

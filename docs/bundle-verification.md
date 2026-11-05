@@ -206,6 +206,197 @@ node tools/test-bili-client.mjs      # 期望 PASS 12 / FAIL 0，exit 0（真实
 
 两脚本均支持 `--json` 输出机器可读结果；重复运行结果一致（行为测试每次先 `cacheClear`，缓存计时项可能因首调用过快而给出「无法判定」说明，仍 PASS）。
 
+---
+
+# 3. 心跳 / 自主行动（v0.2，`docs/spec-feiyu-companion.md`）
+
+## 3.1 验证件
+
+| 文件 | 说明 |
+| --- | --- |
+| `tools/test-companion.mjs` | 零依赖单测，**18 个检查点** = §A6.2 的 8 个场景 + `exports` / `attach-wiring` / `status-shape` / `dispose-cleanup` / `no-console` / `fire-unknown-session` / `fire-running-queues` / `prefix-resolution` / `debug-counters` / `error-isolation`。假 ctx（`on/interval/timeout/effect` + 手动 `emit`）、假 `agents`（形状对齐真实 Agent：会话 id 在 `.session.id`，`get` → `{status, followup}`，`followup` 记录 payload）、假 `agentPresets.presetForSession`、可控时钟（`now()` 手动推进，不真 sleep）；支持 `--json`；`lib/companion.js` 不存在时友好提示 NOT_READY + `exit 1`（已实测，无裸栈）。 |
+| `tools/check-bundle.mjs` | 新增 **11 项**（总 59 项）：`companion-file`、`companion-exports`、`companion-api`、`companion-uses-ctx-timers`、`companion-no-npm`、`heartbeat-prompt`、`heartbeat-debug`、`dir-no-console`（全目录无 `console.*`）、`index-heartbeat-tool`、`index-heartbeat-actions`、`index-inject-companion`（含 `timer`）。 |
+
+## 3.2 首次实跑（2026-11-05 22:5x，bundle 更新中，允许 NOT_READY）
+
+| 脚本 | 结果 | exit |
+| --- | --- | --- |
+| `node tools/test-companion.mjs` | **NOT_READY**：`PASS 0 / FAIL 0 / SKIP 1`（找不到 `lib/companion.js`，友好提示） | 1 |
+| `node tools/check-bundle.mjs` | **FAIL**：`PASS 46 / FAIL 4 / SKIP 7` | 1 |
+
+FAIL 明细与判断：
+
+| 检查项 | 证据 | 判断 |
+| --- | --- | --- |
+| `index-heartbeat-tool` | `index.js` 未注册 `feiyu_heartbeat` | 预期（构建方尚未改 index.js） |
+| `index-inject-companion` | `inject = ['tools']`，缺 `agents` / `agentPresets` | 预期（同上） |
+| `heartbeat-prompt` | 未见 `HEARTBEAT_PROMPT` 常量与「【自主行动·心跳】」文案 | 预期（同上） |
+| `persona-prefix` | `prefix` 缺「【主动开口」 | **疑似 v0.2 回归，见下** |
+
+### 3.2.1 `【主动开口】` 规则块（已拍板：合并、不回退）
+
+- 结论（Lead，2026-11-05 22:5x）：**选择合并，不回退**。人格提示词保留新的「【自主行动（你有自己的节奏）】」块（它同时覆盖心跳与旧定时任务两种提醒）；Lead 已在 `feiyu-connector/cordis.patch.yml:90` 之后补一行桥接：「如果收到的定时提醒里带【主动开口】字样（比如"主动开口时间到"），也按上面这套做：先查再开口，别空打招呼。」
+- 复核结果：`persona-prefix` 已转 **PASS**（prefix 长度 2013，同时含「【主动开口」与「【自主行动」）；断言口径未改。
+
+## 3.3 完整结果（2026-11-05 23:0x，运行态修复 + fire 口径调整后）
+
+| 脚本 | 命令 | 结果 | exit |
+| --- | --- | --- | --- |
+| 静态检查 | `node tools/check-bundle.mjs` | **PASS 57 / FAIL 0 / SKIP 2**（59 项） | 0 |
+| 心跳单测 | `node tools/test-companion.mjs` | **PASS 18 / FAIL 0 / SKIP 0**（18 项） | 0 |
+
+> **FAIL 清单为空** → 无需修复项，因此本轮没有需要定位的 `文件:行`（历史 FAIL：见 §3.2 的 3 条构建中预期项 + 已拍板的 `persona-prefix`）。
+> 本轮变更：`fire` 改为允许目标 agent running（`fire-running-refused` → `fire-running-queues`）；新增 `feiyu_heartbeat action=debug` 检查（`index-heartbeat-actions`、`heartbeat-debug`）；新增 2 个运行态修复回归（`prefix-resolution`、`debug-counters`）。
+
+### 3.3.1 `check-bundle` 逐项结果（59 项）
+
+| 检查项 | 结果 | 证据 |
+| --- | --- | --- |
+| `bundle-dir` | PASS | D:\pr_g\ohjingjing\feiyu-connector |
+| `bundle-files` | PASS | 8 个必备文件齐全 |
+| `pkg-parse` | PASS | JSON 合法 |
+| `pkg-name` | PASS | @local/feiyu-connector |
+| `pkg-version` | PASS | version 0.2.0 |
+| `pkg-type` | PASS | type=module |
+| `pkg-private` | PASS | private=true |
+| `pkg-exports` | PASS | exports . / ./locale/*.json / ./icon 正确 |
+| `pkg-files` | PASS | files 覆盖 6 项 |
+| `pkg-bundle-patch` | PASS | dsh.bundle.patch=./cordis.patch.yml |
+| `pkg-engines` | PASS | engines.node=>=22 |
+| `pkg-no-deps` | PASS | 无任何 npm 依赖 |
+| `locale` | PASS | zh:「小肥鱼 · B站连接器」，en:「Feiyu · Bilibili Connect…」 |
+| `icon` | PASS | icon.svg 799 字节 |
+| `readme` | PASS | 2398 字符，含中文 |
+| `yaml-parse` | PASS | 解析为数组（1 项） |
+| `patch-insert-list` | PASS | 1 个顶层节点，共 2 条 insert |
+| `patch-entry` | PASS | id/name/config 正确 |
+| `patch-preset` | PASS | id=preset-feiyu，name=@deepseek-ai/dsh-agent-preset |
+| `preset-config` | PASS | id=feiyu，name=小肥鱼，order=60 |
+| `preset-plugins` | PASS | 2 个插件（persona + tool-schedule） |
+| `persona-prefix` | PASS | 长度 2013，含角色卡 + 「工具/主动开口/自主行动」规则块 |
+| `persona-complete` | PASS | complete=true（纯 RP） |
+| `index-name` | PASS | name='feiyu-connector' |
+| `index-inject` | PASS | inject=['tools', 'agents', 'agentPresets', 'timer'] |
+| `index-apply` | PASS | apply(ctx) 已导出 |
+| `index-definetool` | PASS | defineTool 来自 @deepseek-ai/dsh-tools（静态/动态 import 均可） |
+| `index-import-style` | SKIP | 偏离 spec §6：未用静态 import，改为动态 import + 恒等兜底（Lead 要求，见 §2.3-2） |
+| `index-tools5` | PASS | 5 个 bili_* 工具已注册（5 个 name 匹配） |
+| `index-tool-desc` | PASS | 5 个工具 description 非空 |
+| `index-tool-required` | PASS | bili_search / bili_video / bili_comments 均有必填参数 |
+| `index-tool-output` | PASS | 5 个工具均有 output{schema,render} |
+| `index-schema-required` | PASS | output.schema 均为对象级 required 数组（回归 JsonSchemaError） |
+| `index-no-console` | PASS | 无 console.log |
+| `index-no-require` | PASS | 无 require( |
+| `index-exec-signal` | PASS | execute 使用 exec.signal |
+| `index-no-npm` | PASS | 仅 import 3 个模块（node: 与 @deepseek-ai/*） |
+| `index-heartbeat-tool` | PASS | feiyu_heartbeat(action, session_id) 已注册；动作：status/debug/arm/disarm/fire |
+| `index-heartbeat-actions` | PASS | HEARTBEAT_ACTIONS = [status, debug, arm, disarm, fire] |
+| `index-inject-companion` | PASS | inject 含 tools / agents / agentPresets / timer |
+| `lib-exports` | PASS | 5 个 async 函数 + __test__ 已导出 |
+| `lib-sources` | PASS | 6 个 B 站端点均已出现 |
+| `lib-ua-referer` | PASS | UA=Chrome，Referer=bilibili.com |
+| `lib-timeout` | PASS | 请求带超时 signal |
+| `lib-retry` | PASS | 含重试逻辑 |
+| `lib-cache` | PASS | 含进程内 TTL 缓存 |
+| `lib-no-console` | PASS | 无 console.log |
+| `lib-errors` | PASS | 关键错误文案符合 §5 |
+| `lib-wbi` | PASS | 含 wbi 签名逻辑 |
+| `lib-no-npm` | PASS | 仅 import 1 个 node: 内置模块 |
+| `companion-file` | PASS | lib/companion.js 12049 字符 |
+| `companion-exports` | PASS | 导出 createCompanion |
+| `companion-api` | PASS | attach/status/arm/disarm/fire/tick 均出现 |
+| `companion-uses-ctx-timers` | PASS | 使用 ctx.interval，无裸 setInterval |
+| `companion-no-npm` | PASS | 仅 import 1 个 node:/相对模块 |
+| `heartbeat-debug` | PASS | action=debug → diagnose()（attached/counters/agents/presets/armed） |
+| `heartbeat-prompt` | PASS | lib/companion.js 含 HEARTBEAT_PROMPT 且含「【自主行动·心跳】」 |
+| `dir-no-console` | PASS | 3 个 JS 文件均无 console.* |
+| `dsh-tools-import` | SKIP | 工作区无法 import('@deepseek-ai/dsh-tools')（安装到 profile 后由 Host 解析） |
+
+### 3.3.2 `test-companion` 逐项结果（18 项）
+
+| 检查项 | 结果 | 证据 |
+| --- | --- | --- |
+| `exports` | PASS | createCompanion → attach/status/arm/disarm/fire/tick |
+| `attach-wiring` | PASS | session/event + dispose + interval(60000ms) |
+| `dispose-cleanup` | PASS | dispose 后 interval 已释放 |
+| `status-shape` | PASS | [{ sessionId, nextAt, firedToday, dayKey }]，dayKey=2026-11-05 |
+| `no-console` | PASS | 武装 + 投递期间无 console 输出 |
+| `first-turn-arms` | PASS | nextAt = now + 20.0min |
+| `non-feiyu-ignored` | PASS | 非 feiyu 预设与非 turn/start 均不武装 |
+| `tick-fires-idle` | PASS | 完整 UserMessage（id/role/content/source）；nextAt 后移 94.9min |
+| `running-skip` | PASS | 未投递/未计数，nextAt 顺延 120s |
+| `quiet-hours-defer` | PASS | 顺延至次日 08:10 |
+| `daily-cap` | PASS | 6 次后第 7 次不投递 |
+| `disarm-stops` | PASS | disarm 后 status 清空、不投递 |
+| `fire-forced` | PASS | fire(idle) → true，立即投递；计入 firedToday 并后移 nextAt（已知设计取舍，非缺陷） |
+| `fire-unknown-session` | PASS | fire(未知会话) → false |
+| `fire-running-queues` | PASS | fire(running) → true，投递 1 次并计入 firedToday（排队到下一轮；运行态口径） |
+| `prefix-resolution` | PASS | session- 前缀剥离 + 8 位唯一前缀可解析（含 fire） |
+| `debug-counters` | PASS | attached=true eventsSeen=1 arms=1 agents=1 |
+| `error-isolation` | PASS | 异常被吞掉并记录 lastError：followup 失败（模拟） |
+
+### 3.3.3 两个 SKIP（均为既有预期偏差，不计失败）
+
+1. `index-import-style`：动态 `import('@deepseek-ai/dsh-tools')` + 恒等兜底，是 Lead 明确要求（§2.3-2）。
+2. `dsh-tools-import`：工作区不安装 `@deepseek-ai/dsh-tools`，安装到 profile 后由 Host 解析（spec §7.2 允许 SKIP）。
+
+## 3.4 特别复核（Lead 指定）
+
+### 3.4.1 (a) 心跳消息是否构成完整 `UserMessage` —— **通过**
+
+- 实现：`feiyu-connector/lib/companion.js:157-164` `createHeartbeatMessage()` 返回
+  `{ id: randomUUID(), role: 'user', content: [{ type: 'text', text: HEARTBEAT_PROMPT }], source: { kind: 'user' } }`（`randomUUID` 来自 `node:crypto`，符合零依赖约束）。
+- 契约核对（`cordis_inspect_query` → host / Service / `listService`）：`UserMessage extends MessageBase { readonly role: 'user' }`，`MessageSourceMap['user'] = { kind: 'user' }`——id/role/content/source 四字段齐备。
+- 单测已断言：`tick-fires-idle` 检查 `payload.id` 非空、`role === 'user'`、`content[0].text` 含「【自主行动·心跳】」、`source.kind === 'user'`。
+- 结论：构建方 flag 的风险点已在实现中覆盖，风险关闭。
+
+### 3.4.2 (b) `fire` 的计数与排队语义 —— **已知设计取舍，非 FAIL**
+
+- `fire` 计入 `firedToday` 并后移 `nextAt`（`companion.js:284-291`）：Lead 认可的有意设计（手动触发也消耗当日额度、避免与自动心跳叠加），单测 `fire-forced` 锁定。
+- **运行态口径调整（2026-11-05 23:0x）**：`fire` 允许目标 agent 处于 `running`（`followup` 排队到下一轮），只有「agent 不存在」才拒绝（`companion.js:273-274`、`index.js:375-379`）。单测 `fire-running-queues` 锁定该口径（原 `fire-running-refused` 已按运行态事实替换）。
+
+### 3.4.3 复核观察（3 条已在运行态闭环）
+
+1. ~~`fire` 要求 `agent.status === 'idle'`~~ → 运行态实测暴露后已修：现在只拒绝「agent 不存在」，running 允许投递排队（见 §3.5 #3）。
+2. ~~`feiyu_heartbeat(action=fire)` 在本会话被预检拦下~~ → `index.js:375-379` 预检已放宽；Lead 实测本会话 `fire` 成功（`deliveries=1`）。
+3. ~~运行时可能取不到 `followup`/`status`~~ → 运行态确认 `agents.list()` 4 个 Agent 均 `hasFollowup=true`，`session.id` 字段位置已在 `companion.js:132-164` 适配。保留一点：公开 `Agent` 类型仍只声明 `id`（具体字段属运行时实现），单测 `error-isolation` 继续兜住异常路径。
+
+## 3.5 运行态修复记录（Lead 重装实测，2026-11-05 23:0x）
+
+Lead 在真实 profile 重装后验证，并修掉 3 个只有运行时才暴露的问题；均已反映到实现与本轮检查件：
+
+| # | 问题 | 现象 | 修复 | 验证件对应 |
+| --- | --- | --- | --- | --- |
+| 1 | `inject` 缺 `timer` | Cordis 报 `cannot get property "timer" without inject`，心跳 ticker 起不来 | `index.js:23` `inject` 增加 `'timer'`（现为 tools/agents/agentPresets/timer） | `index-inject-companion` 现在要求这 4 项 |
+| 2 | Agent 会话 id 在 `.session.id`（不是 `.id`） | `listAgentIds()` 取到 `undefined`，8 位前缀永远匹配不到会话 | `companion.js:132-164` 按 `session.id → sessionId → id` 兜底；前缀匹配时剥掉 `session-` | 新增单测 `prefix-resolution`（裸 8 位前缀 / `session-` 前缀 / fire） |
+| 3 | `fire` 的 `status !== 'idle'` 预检过严 | 真会话里调 `fire` 时目标 agent 必然 running → 永远「未投递」 | `companion.js:273-274` + `index.js:375-379` 改为仅「agent 不存在」才拒；running 允许排队 | `fire-running-refused` → `fire-running-queues` |
+| + | 新增 `feiyu_heartbeat action=debug` | 运行态排障需要看事件计数与 Agent 字段 | `companion.js:230-258` `diagnose()` + `index.js:343-357` 输出 attached/counters/agents/presets/armed | 静态检查 `index-heartbeat-actions`、`heartbeat-debug`；单测 `debug-counters` |
+
+### 3.5.1 Lead 运行态实测结论（摘要）
+
+- `feiyu_heartbeat action=debug`：`attached=true`、`eventsSeen>0`（`session/event` 监听器确实收到事件）、`agents.list()` 返回 4 个 Agent 且均 `hasFollowup=true`、`presetForSession` 可用。
+- `arm / fire / status / disarm` 全部跑通；`fire` 实测 `deliveries=1`。
+- 以上为 Lead 侧证据（验证方只读文件、未操作 profile）。
+
+### 3.5.2 一条非阻塞小观察
+
+`index.js:315` 的 `action` 参数 description 仍只列「status=…；arm=…；disarm=…；fire=…」，未提 `debug`（`:337` 的错误提示已更新）。不影响功能与模型可用性，建议顺手补一句 `debug=运行态诊断`。
+
+## 3.6 验证覆盖边界
+
+| spec §A6 验收项 | 状态 | 说明 |
+| --- | --- | --- |
+| §A6.1 静态检查 | ✅ 已验证 | 本文 §3.3.1：59 项 = 57 PASS / 0 FAIL / 2 SKIP |
+| §A6.2 8 个单测场景 | ✅ 已验证 | 本文 §3.3.2：18 项全 PASS（8 场景 + 10 个辅助/回归检查） |
+| §A6.3 重装后 active、工具列表出现 `feiyu_heartbeat`、真会话能 `fire` | ✅ Lead 运行态证据 | 重装后 active；`action=debug` 显示 attached=true / eventsSeen>0 / 4 agents hasFollowup=true；fire 实测 deliveries=1（详见 §3.5.1） |
+
+## 3.7 复跑命令（幂等，无网络）
+
+```bash
+node tools/check-bundle.mjs      # 期望 PASS 57 / FAIL 0 / SKIP 2，exit 0
+node tools/test-companion.mjs    # 期望 PASS 18 / FAIL 0，exit 0（假 ctx / 可控时钟，不联网）
+```
+
 ### 2.7 Lead 侧终验证据（2026-11-05 21:45–21:48）
 
 | 验收项 | 结果 | 证据 |

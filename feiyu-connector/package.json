@@ -1,6 +1,6 @@
 {
   "name": "@local/feiyu-connector",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "小肥鱼 · B站只读连接器（DSH Host bundle）",

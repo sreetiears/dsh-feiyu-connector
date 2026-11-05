@@ -9,9 +9,10 @@
 
 ```
 feiyu-connector/     ← 可安装的 DSH Host bundle（插件本体）
-  index.js           5 个模型工具注册（bili_hot / bili_ranking / bili_search / bili_video / bili_comments）
+  index.js           5 个 B 站只读工具 + 1 个心跳运维工具 feiyu_heartbeat
   lib/bili.js        B 站 HTTP 客户端：wbi 签名（失败降级）、10s 超时、重试 1 次、5 分钟 TTL 缓存
-  cordis.patch.yml   插件行 + preset-feiyu（persona.prefix = 角色卡全文，complete: true）
+  lib/companion.js   心跳/自主行动：首次对话后自动计时，到点真的去 B 站搜内容再开口
+  cordis.patch.yml   插件行 + preset-feiyu（persona.prefix = 角色卡全文 + 自主行动规则，complete: true）
   locale/ icon.svg README.md
 persona/dafeiyu.md   角色卡（来源 aureth-labs/dsh-aurabot-qq，MIT，正文未改写）
 tools/               零依赖验证：check-bundle.mjs（静态 48 项）、test-bili-client.mjs（真实网络 12 项）
@@ -30,7 +31,7 @@ docs/
 1. 安装插件（工作区里执行）：把 `feiyu-connector/` 的**绝对路径**交给 DSH 的插件管理器安装（`install_bundle`），安装后启用一次。
 2. 新建会话 → 预设选 **小肥鱼**。
 3. 聊天：说「今天 B 站有什么热闹的」→ 会调用 `bili_hot` 并用角色口吻回答。
-4. 让它主动找你（**在人设会话里**说一句）：*「以后每天 9:30、14:30、21:30 主动跟我说话，没东西说就别发」*。
+4. 主动行动：**不需要设置**。该会话第一次说话后插件自动开始心跳（20 分钟首跳、约每 90 分钟一次、23:00–08:00 静默、每日 ≤6 次）。到点它真的去搜/看 B 站内容再主动开口，而不是打招呼。用 `feiyu_heartbeat({action:"status"})` 查看状态，`fire` 可立即触发一次。
 
 ## 验证
 
