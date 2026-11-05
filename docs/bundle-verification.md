@@ -252,7 +252,7 @@ FAIL 明细与判断：
 
 | 检查项 | 结果 | 证据 |
 | --- | --- | --- |
-| `bundle-dir` | PASS | D:\pr_g\ohjingjing\feiyu-connector |
+| `bundle-dir` | PASS | ./feiyu-connector |
 | `bundle-files` | PASS | 8 个必备文件齐全 |
 | `pkg-parse` | PASS | JSON 合法 |
 | `pkg-name` | PASS | @local/feiyu-connector |
