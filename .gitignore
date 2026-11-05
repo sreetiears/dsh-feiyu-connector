@@ -1,0 +1,23 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+
+# 本地临时与运行产物
+.tmp/
+*.log
+logs/
+
+# 第三方内容抓取存档（体积大、版权归原作者，仅本地参考）
+research/repos/
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 敏感/本地配置
+.env
+.env.*
+*.pem
